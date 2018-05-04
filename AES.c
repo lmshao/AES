@@ -25,6 +25,8 @@
 
 #define ROF32(x, n)  (((x) << (n)) | ((x) >> (32-(n))))
 
+#define ROR32(x, n)  (((x) >> (n)) | ((x) << (32-(n))))
+
 /* for 128-bit blocks, Rijndael never uses more than 10 rcon values */
 static const uint32_t rcon[10] = {
         0x01000000UL, 0x02000000UL, 0x04000000UL, 0x08000000UL, 0x10000000UL,
@@ -102,6 +104,7 @@ int keyExpansion(const uint8_t *key, uint32_t keyLen, AesKey *aesKey) {
     }
 
     uint32_t *w = aesKey->eK;
+    uint32_t *v = aesKey->dK;
 
     /* keyLen is 16 Bytes, generate uint32_t W[44]. */
 
@@ -117,6 +120,16 @@ int keyExpansion(const uint8_t *key, uint32_t keyLen, AesKey *aesKey) {
         w[6] = w[2] ^ w[5];
         w[7] = w[3] ^ w[6];
         w += 4;
+    }
+
+    w = aesKey->eK+44 - 4;
+    for (int j = 0; j < 11; ++j) {
+
+        for (int i = 0; i < 4; ++i) {
+            v[i] = w[i];
+        }
+        w -= 4;
+        v += 4;
     }
 
     return 0;
@@ -147,6 +160,17 @@ int subBytes(uint8_t (*state)[4]) {
     return 0;
 }
 
+int invSubBytes(uint8_t (*state)[4]) {
+    /* i: row, j: col */
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            state[i][j] = inv_S[state[i][j]];
+        }
+    }
+
+    return 0;
+}
+
 int shiftRows(uint8_t (*state)[4]) {
     uint32_t block[4] = {0};
 
@@ -154,6 +178,19 @@ int shiftRows(uint8_t (*state)[4]) {
     for (int i = 0; i < 4; ++i) {
         LOAD32H(block[i], state[i]);
         block[i] = ROF32(block[i], 8*i);
+        STORE32H(block[i], state[i]);
+    }
+
+    return 0;
+}
+
+int invShiftRows(uint8_t (*state)[4]) {
+    uint32_t block[4] = {0};
+
+    /* i: row */
+    for (int i = 0; i < 4; ++i) {
+        LOAD32H(block[i], state[i]);
+        block[i] = ROR32(block[i], 8*i);
         STORE32H(block[i], state[i]);
     }
 
@@ -199,6 +236,30 @@ int mixColumns(uint8_t (*state)[4]) {
         for (int j = 0; j < 4; ++j) {
             state[i][j] = GMul(M[i][0], tmp[0][j]) ^ GMul(M[i][1], tmp[1][j])
                         ^ GMul(M[i][2], tmp[2][j]) ^ GMul(M[i][3], tmp[3][j]);
+        }
+    }
+
+    return 0;
+}
+
+int invMixColumns(uint8_t (*state)[4]) {
+    uint8_t tmp[4][4];
+    uint8_t M[4][4] = {{0x0E, 0x0B, 0x0D, 0x09},
+                       {0x09, 0x0E, 0x0B, 0x0D},
+                       {0x0D, 0x09, 0x0E, 0x0B},
+                       {0x0B, 0x0D, 0x09, 0x0E}};
+
+    /* copy state[4][4] to tmp[4][4] */
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j){
+            tmp[i][j] = state[i][j];
+        }
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            state[i][j] = GMul(M[i][0], tmp[0][j]) ^ GMul(M[i][1], tmp[1][j])
+                          ^ GMul(M[i][2], tmp[2][j]) ^ GMul(M[i][3], tmp[3][j]);
         }
     }
 
@@ -253,6 +314,57 @@ int aesEncrypt(const uint8_t *key, uint32_t keyLen, const uint8_t *pt, uint8_t *
 
         pos += BLOCKSIZE;
         pt += BLOCKSIZE;
+        rk = aesKey.eK;
+    }
+    return 0;
+}
+
+int aesDecrypt(const uint8_t *key, uint32_t keyLen, const uint8_t *ct, uint8_t *pt, uint32_t len) {
+    AesKey aesKey;
+    uint8_t *pos = pt;
+    const uint32_t *rk = aesKey.dK;
+    uint8_t out[BLOCKSIZE] = {0};
+    uint8_t actualKey[16] = {0};
+    uint8_t state[4][4] = {0};
+
+    if (NULL == key || NULL == ct || NULL == pt){
+        printf("param err.\n");
+        return -1;
+    }
+
+    if (keyLen > 16){
+        printf("keyLen must be 16.\n");
+        return -1;
+    }
+
+    if (len % BLOCKSIZE){
+        printf("inLen is invalid.\n");
+        return -1;
+    }
+
+    memcpy(actualKey, key, keyLen);
+    keyExpansion(actualKey, 16, &aesKey);
+
+    for (int i = 0; i < len; i += BLOCKSIZE) {
+        loadStateArray(state, ct);
+        addRoundKey(state, rk);
+
+        for (int j = 1; j < 10; ++j) {
+            rk += 4;
+            invShiftRows(state);
+            invSubBytes(state);
+            addRoundKey(state, rk);
+            invMixColumns(state);
+        }
+
+        invSubBytes(state);
+        invShiftRows(state);
+        addRoundKey(state, rk+4);
+
+        storeStateArray(state, pos);
+        pos += BLOCKSIZE;
+        ct += BLOCKSIZE;
+        rk = aesKey.dK;
     }
     return 0;
 }
