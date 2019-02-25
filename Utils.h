@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-void printHex(uint8_t *ptr, int len, char *tag);
+void printHex(const uint8_t *ptr, int len, char *tag);
 
 void printState(uint8_t state[4][4], char *tag);
 
